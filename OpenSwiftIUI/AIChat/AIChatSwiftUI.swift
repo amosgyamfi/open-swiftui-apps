@@ -1,22 +1,13 @@
 import SwiftUI
 import FoundationModels
 
-@Generable(description: "Get the current weather for a specified location")
-struct WeatherQuery {
-    @Guide(description: "The city name, e.g., 'San Francisco' or 'London'")
-    var city: String
-}
-
-@Generable(description: "A structured response with organized information")
-struct StructuredResponse {
-    @Guide(description: "The main answer or summary")
-    var summary: String
-    
-    @Guide(description: "Key points or bullet points related to the topic")
-    var keyPoints: [String]
-    
-    @Guide(description: "Additional context or details if relevant")
-    var details: String?
+@main
+struct AIChatApp: App {
+    var body: some Scene {
+        WindowGroup {
+            ChatView()
+        }
+    }
 }
 
 struct Message: Identifiable {
@@ -33,9 +24,6 @@ struct ChatView: View {
     @State private var isGenerating = false
     @State private var availability: SystemLanguageModel.Availability?
     @FocusState private var isInputFocused: Bool
-    @State private var showAPIKeyAlert = false
-    @AppStorage("openWeatherAPIKey") private var apiKey = ""
-    @State private var structuredOutputMode = false
     
     var body: some View {
         NavigationStack {
@@ -61,28 +49,6 @@ struct ChatView: View {
             }
             .navigationTitle("AI Chat")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    HStack(spacing: 16) {
-                        Button(action: { structuredOutputMode.toggle() }) {
-                            Image(systemName: structuredOutputMode ? "list.bullet.rectangle.fill" : "list.bullet.rectangle")
-                                .foregroundStyle(structuredOutputMode ? .blue : .primary)
-                        }
-                        
-                        Button(action: { showAPIKeyAlert = true }) {
-                            Image(systemName: apiKey.isEmpty ? "key" : "key.fill")
-                                .foregroundStyle(apiKey.isEmpty ? .red : .green)
-                        }
-                    }
-                }
-            }
-            .alert("Weather API Key", isPresented: $showAPIKeyAlert) {
-                TextField("Enter OpenWeatherMap API Key", text: $apiKey)
-                Button("Done", action: {})
-                Button("Cancel", role: .cancel, action: {})
-            } message: {
-                Text("Enter your OpenWeatherMap API key to enable weather queries. Get one free at openweathermap.org")
-            }
             .safeAreaInset(edge: .bottom) {
                 if availability == .available {
                     inputBar
@@ -209,83 +175,14 @@ struct ChatView: View {
         
         Task {
             do {
-                if structuredOutputMode {
-                    let structuredResponse = try await session.respond(to: trimmedText, generating: StructuredResponse.self)
-                    
-                    var formattedContent = "**Summary:**\n\(structuredResponse.content.summary)\n\n"
-                    
-                    if !structuredResponse.content.keyPoints.isEmpty {
-                        formattedContent += "**Key Points:**\n"
-                        for (index, point) in structuredResponse.content.keyPoints.enumerated() {
-                            formattedContent += "\(index + 1). \(point)\n"
-                        }
-                    }
-                    
-                    if let details = structuredResponse.content.details, !details.isEmpty {
-                        formattedContent += "\n**Additional Details:**\n\(details)"
-                    }
-                    
-                    let aiMessage = Message(content: formattedContent, isUser: false, timestamp: Date())
-                    messages.append(aiMessage)
-                } else {
-                    let weatherTool = Tool(
-                        name: "get_weather",
-                        description: "Get the current weather for a specified location",
-                        generate: WeatherQuery.self
-                    )
-                    
-                    let response = try await session.respond(to: trimmedText, tools: [weatherTool])
-                    
-                    if let toolRequest = response.toolInvocationRequests?.first {
-                        if let weatherQuery = toolRequest.generate(WeatherQuery.self) {
-                            let weatherData = await fetchWeather(for: weatherQuery.city)
-                            let toolResult = ToolInvocationResult(
-                                invocationID: toolRequest.invocationID,
-                                content: weatherData
-                            )
-                            
-                            let finalResponse = try await session.respond(to: toolResult)
-                            let aiMessage = Message(content: finalResponse.content, isUser: false, timestamp: Date())
-                            messages.append(aiMessage)
-                        }
-                    } else {
-                        let aiMessage = Message(content: response.content, isUser: false, timestamp: Date())
-                        messages.append(aiMessage)
-                    }
-                }
+                let response = try await session.respond(to: trimmedText)
+                let aiMessage = Message(content: response.content, isUser: false, timestamp: Date())
+                messages.append(aiMessage)
             } catch {
                 let errorMessage = Message(content: "Sorry, I encountered an error: \(error.localizedDescription)", isUser: false, timestamp: Date())
                 messages.append(errorMessage)
             }
             isGenerating = false
-        }
-    }
-    
-    func fetchWeather(for city: String) async -> String {
-        guard !apiKey.isEmpty else {
-            return "Weather API key not configured. Please add your OpenWeatherMap API key in settings (key icon)."
-        }
-        
-        let cityEncoded = city.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? city
-        let urlString = "https://api.openweathermap.org/data/2.5/weather?q=\(cityEncoded)&appid=\(apiKey)&units=metric"
-        
-        guard let url = URL(string: urlString) else {
-            return "Invalid city name: \(city)"
-        }
-        
-        do {
-            let (data, _) = try await URLSession.shared.data(from: url)
-            let weather = try JSONDecoder().decode(WeatherResponse.self, from: data)
-            
-            return """
-            Weather in \(weather.name):
-            - Temperature: \(weather.main.temp)°C (feels like \(weather.main.feelsLike)°C)
-            - Conditions: \(weather.weather.first?.description.capitalized ?? "Unknown")
-            - Humidity: \(weather.main.humidity)%
-            - Wind Speed: \(weather.wind.speed) m/s
-            """
-        } catch {
-            return "Unable to fetch weather for \(city). Error: \(error.localizedDescription)"
         }
     }
     
@@ -305,33 +202,6 @@ struct ChatView: View {
         if let index = messages.firstIndex(where: { $0.id == message.id }), index > 0 {
             messages.removeSubrange((index - 1)...index)
         }
-    }
-}
-
-struct WeatherResponse: Codable {
-    let name: String
-    let main: MainWeather
-    let weather: [WeatherCondition]
-    let wind: Wind
-    
-    struct MainWeather: Codable {
-        let temp: Double
-        let feelsLike: Double
-        let humidity: Int
-        
-        enum CodingKeys: String, CodingKey {
-            case temp
-            case feelsLike = "feels_like"
-            case humidity
-        }
-    }
-    
-    struct WeatherCondition: Codable {
-        let description: String
-    }
-    
-    struct Wind: Codable {
-        let speed: Double
     }
 }
 
@@ -388,14 +258,7 @@ struct MessageBubble: View {
                         .padding(.vertical, 10)
                         .background(message.isUser ? Color.blue : Color(.systemGray5))
                         .foregroundColor(message.isUser ? .white : .primary)
-                        .clipShape(
-                            UnevenRoundedRectangle(
-                                topLeadingRadius: 20,
-                                bottomLeadingRadius: message.isUser ? 0 : 20,
-                                bottomTrailingRadius: message.isUser ? 20 : 0,
-                                topTrailingRadius: 20
-                            )
-                        )
+                        .cornerRadius(20)
                     
                     if !message.isUser {
                         HStack(spacing: 16) {
